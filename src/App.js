@@ -1,24 +1,67 @@
-import logo from './logo.svg';
-import './App.css';
+import React from 'react';
+import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
+import { Provider } from 'react-redux';
+import { ThemeProvider } from '@mui/material/styles';
+import { I18nextProvider } from 'react-i18next';
+import { AuthProvider } from './contexts/AuthContext';
+import { store } from './store';
+import theme from './styles/theme';
+import i18n from './i18n';
+import LandingPage from './components/LandingPage';
+import Register from './components/Register';
+import Login from './components/Login';
+import ProtectedRoute from './components/ProtectedRoute';
+import Dashboard from './components/Dashboard/Dashboard'; 
+import RegistrationSuccess from './components/RegistrationSuccess';
+import ResetPassword from './components/ResetPassword';
+import ForgotPassword from './components/ForgotPassword';
+import MFASetup from './components/MFASetup';
+import EmailVerificationSuccess from './components/EmailVerificationSuccess';
+import MFAVerify from './components/MFAVerify';
+
+
 
 function App() {
   return (
-    <div className="App">
-      <header className="App-header">
-        <img src={logo} className="App-logo" alt="logo" />
-        <p>
-          Edit <code>src/App.js</code> and save to reload.
-        </p>
-        <a
-          className="App-link"
-          href="https://reactjs.org"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Learn React
-        </a>
-      </header>
-    </div>
+    <Provider store={store}>
+      <ThemeProvider theme={theme}>
+        <I18nextProvider i18n={i18n}>
+          <AuthProvider>
+            <Router>
+              <div className="App">
+                <Routes>
+                  <Route path="/" element={<LandingPage />} />
+                  <Route path="/register" element={<Register />} />
+                  <Route path="/registration-success" element={<RegistrationSuccess />} />
+                  <Route path="/email-verification-success" element={<EmailVerificationSuccess />} />
+
+                  <Route path="/mfa-setup" element={<MFASetup />} />
+                  <Route path="/mfa-verify" element={<MFAVerify />} />
+
+
+
+                  <Route path="/login" element={<Login />} />
+                  <Route path="/forgot-password" element={<ForgotPassword />} />
+
+                  <Route path="/reset-password" element={<ResetPassword />} />
+
+                  <Route 
+                   path="/dashboard/*" 
+                   element={
+                  <ProtectedRoute>
+                  <Dashboard />
+                  </ProtectedRoute>
+                   } 
+
+                  />
+                  {/* Add more routes as needed */}
+                </Routes>
+              </div>
+            </Router>
+          </AuthProvider>
+        </I18nextProvider>
+      </ThemeProvider>
+    </Provider>
   );
 }
 
