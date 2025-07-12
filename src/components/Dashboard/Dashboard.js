@@ -9,7 +9,7 @@ import PatientManagement from './PatientManagement';
 import Visits from './Visits';
 // import Diagnostics from './Diagnostics';
 import Analytics from './Analytics';
-import Reports from './Reports';
+import PerformanceDashboard from './PerformanceDashboard';
 import UserProfileModal from '../Modals/UserProfileModal';
 import AdvancedFloatingChat from './AdvancedFloatingChat'; 
 console.log(Overview);
@@ -69,7 +69,8 @@ const Dashboard = () => {
          {/* <Route path="diagnostics" element={<Diagnostics />} /> */}
          <Route path="analytics" element={<Analytics />} />
          {/* <Route path="analytics" element={<Analytics />} /> */}
-         <Route path="reports" element={<Reports />} />
+         {/* <Route path="reports" element={<Reports />} /> */}
+         <Route path="/performance" element={<PerformanceDashboard />} />
           </Routes>
         </main>
         <AdvancedFloatingChat />

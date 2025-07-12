@@ -12,14 +12,13 @@ import Register from './components/Register';
 import Login from './components/Login';
 import ProtectedRoute from './components/ProtectedRoute';
 import Dashboard from './components/Dashboard/Dashboard'; 
+import DiagnosisPage from './components/Dashboard/DiagnosisPage'; // ✅ Add this import
 import RegistrationSuccess from './components/RegistrationSuccess';
 import ResetPassword from './components/ResetPassword';
 import ForgotPassword from './components/ForgotPassword';
 import MFASetup from './components/MFASetup';
 import EmailVerificationSuccess from './components/EmailVerificationSuccess';
 import MFAVerify from './components/MFAVerify';
-
-
 
 function App() {
   return (
@@ -34,16 +33,21 @@ function App() {
                   <Route path="/register" element={<Register />} />
                   <Route path="/registration-success" element={<RegistrationSuccess />} />
                   <Route path="/email-verification-success" element={<EmailVerificationSuccess />} />
-
                   <Route path="/mfa-setup" element={<MFASetup />} />
                   <Route path="/mfa-verify" element={<MFAVerify />} />
-
-
-
                   <Route path="/login" element={<Login />} />
                   <Route path="/forgot-password" element={<ForgotPassword />} />
-
                   <Route path="/reset-password" element={<ResetPassword />} />
+
+                  {/* ✅ Add the diagnosis route as a top-level protected route */}
+                  <Route 
+                    path="/diagnosis/:visitId" 
+                    element={
+                      <ProtectedRoute>
+                        <DiagnosisPage />
+                      </ProtectedRoute>
+                    } 
+                  />
 
                   <Route 
                    path="/dashboard/*" 
@@ -52,9 +56,7 @@ function App() {
                   <Dashboard />
                   </ProtectedRoute>
                    } 
-
                   />
-                  {/* Add more routes as needed */}
                 </Routes>
               </div>
             </Router>

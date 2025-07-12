@@ -1,6 +1,7 @@
 // src/services/api.js
 import axios from 'axios';
 import { io } from 'socket.io-client';  
+import performanceTracker from './performanceTracker';
 
 
 const API_URL = 'http://127.0.0.1:5000/api';
@@ -41,9 +42,98 @@ apiService.interceptors.response.use(
     return Promise.reject(error);
   }
 );
+// Add request interceptor with performance tracking
+apiService.interceptors.request.use(
+  (config) => {
+    const token = localStorage.getItem('token');
+    if (token) {
+      config.headers['Authorization'] = `Bearer ${token}`;
+    }
+    
+    // Add performance tracking
+    const requestId = `api-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    config.metadata = { 
+      requestId, 
+      startTime: performance.now(),
+      timestamp: Date.now()
+    };
+    
+    // Track the request start
+    performanceTracker.startOperation(requestId, 'api-request', {
+      method: config.method,
+      url: config.url,
+      endpoint: config.url.replace(API_URL, ''),
+      hasFile: config.headers['Content-Type'] === 'multipart/form-data'
+    });
+    
+    // Add request ID to headers for backend correlation
+    config.headers['X-Request-ID'] = requestId;
+    
+    // For upload requests, add client timing
+    if (config.data instanceof FormData && config.url.includes('/images')) {
+      config.data.append('upload_start_time', Date.now());
+    }
+    
+    return config;
+  },
+  (error) => Promise.reject(error)
+);
 
-// Authentication
-// export const login = (email, password) => apiService.post('/login', { email, password });
+// Add response interceptor with performance tracking
+apiService.interceptors.response.use(
+  (response) => {
+    const config = response.config;
+    if (config.metadata) {
+      const { requestId } = config.metadata;
+      const endTime = performance.now();
+      
+      // End the operation tracking
+      const metric = performanceTracker.endOperation(requestId, 'success', {
+        status: response.status,
+        size: JSON.stringify(response.data).length,
+        serverTiming: response.headers['x-response-time'] || null
+      });
+      
+      // Log slow requests
+      if (metric && metric.duration > 5000) {
+        console.warn('Slow API request detected:', {
+          url: config.url,
+          duration: metric.duration,
+          method: config.method
+        });
+      }
+    }
+    
+    return response;
+  },
+  async (error) => {
+    const config = error.config;
+    
+    // Track failed requests
+    if (config && config.metadata) {
+      const { requestId } = config.metadata;
+      performanceTracker.endOperation(requestId, 'error', {
+        status: error.response?.status,
+        message: error.message,
+        code: error.code
+      });
+    }
+    
+    // Handle 401 errors
+    if (error.response?.status === 401 && !error.config._retry) {
+      error.config._retry = true;
+      try {
+        // Implement refresh token logic here if needed
+        return apiService(error.config);
+      } catch (_error) {
+        return Promise.reject(_error);
+      }
+    }
+    
+    return Promise.reject(error);
+  }
+);
+
 export const login = async (email, password, mfaToken, backupCode) => {
   try {
     const response = await apiService.post('/login', { 
@@ -131,48 +221,217 @@ export const getTotalPatients = () =>
       return 0;
     });
     
+// export const uploadVisitImages = async (visitId, formData, onProgress) => {
+//   try {
+//     const response = await apiService.post(`/visits/${visitId}/images`, formData, {
+//       headers: {
+//         'Content-Type': 'multipart/form-data',
+//       },
+//       onUploadProgress: (progressEvent) => {
+//         const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+//         if (onProgress) {
+//           onProgress(percentCompleted);
+//         }
+//       },
+//     });
+//     return response.data;
+//   } catch (error) {
+//     console.error('Error uploading images:', error);
+//     if (error.response) {
+//       console.error('Response data:', error.response.data);
+//       console.error('Response status:', error.response.status);
+//     }
+//     throw error;
+//   }
+// };
+// Enhanced upload function with detailed progress tracking
 export const uploadVisitImages = async (visitId, formData, onProgress) => {
+  const uploadId = `upload-${visitId}-${Date.now()}`;
+  
+  // Start tracking the upload operation
+  performanceTracker.startOperation(uploadId, 'image-upload', {
+    visitId,
+    fileCount: formData.getAll('images').length,
+    totalSize: formData.getAll('images').reduce((sum, file) => sum + file.size, 0)
+  });
+  
   try {
+    // Mark preparation complete
+    performanceTracker.mark(uploadId, 'preparation-complete');
+    
     const response = await apiService.post(`/visits/${visitId}/images`, formData, {
       headers: {
         'Content-Type': 'multipart/form-data',
       },
       onUploadProgress: (progressEvent) => {
         const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+        
+        // Track progress milestones
+        if (percentCompleted === 25) {
+          performanceTracker.addStep(uploadId, '25-percent', { loaded: progressEvent.loaded });
+        } else if (percentCompleted === 50) {
+          performanceTracker.addStep(uploadId, '50-percent', { loaded: progressEvent.loaded });
+        } else if (percentCompleted === 75) {
+          performanceTracker.addStep(uploadId, '75-percent', { loaded: progressEvent.loaded });
+        } else if (percentCompleted === 100) {
+          performanceTracker.addStep(uploadId, '100-percent', { loaded: progressEvent.loaded });
+        }
+        
         if (onProgress) {
           onProgress(percentCompleted);
         }
       },
     });
+    
+    // Mark upload complete
+    performanceTracker.mark(uploadId, 'upload-complete');
+    
+    // End tracking with success
+    const metrics = performanceTracker.endOperation(uploadId, 'success', {
+      totalImages: response.data.total_images,
+      uploadTime: response.data.performance?.upload_time,
+      requestId: response.data.performance?.request_id
+    });
+    
+    // Send metrics to backend
+    sendPerformanceMetrics({
+      clientMetrics: metrics,
+      serverRequestId: response.data.performance?.request_id
+    });
+    
     return response.data;
   } catch (error) {
+    // End tracking with error
+    performanceTracker.endOperation(uploadId, 'error', {
+      errorMessage: error.message,
+      errorCode: error.response?.status
+    });
+    
     console.error('Error uploading images:', error);
-    if (error.response) {
-      console.error('Response data:', error.response.data);
-      console.error('Response status:', error.response.status);
-    }
+    throw error;
+  }
+};
+// Enhanced diagnosis initiation with performance tracking
+export const initiateDiagnosis = async (visitId) => {
+  const diagnosisId = `diagnosis-${visitId}-${Date.now()}`;
+  
+  console.log('Initiating diagnosis for visit:', visitId);
+  
+  // Start tracking
+  performanceTracker.startOperation(diagnosisId, 'diagnosis', { visitId });
+  
+  try {
+    performanceTracker.addStep(diagnosisId, 'request-sent');
+    
+    const response = await apiService.post(`/visits/${visitId}/initiate-diagnosis`);
+    
+    performanceTracker.addStep(diagnosisId, 'response-received');
+    
+    // End tracking with success
+    const metrics = performanceTracker.endOperation(diagnosisId, 'success', {
+      processingTime: response.data.performance?.processing_time,
+      requestId: response.data.performance?.request_id,
+      parasiteCount: response.data.summary?.total_parasites
+    });
+    
+    // Send metrics to backend
+    sendPerformanceMetrics({
+      clientMetrics: metrics,
+      serverRequestId: response.data.performance?.request_id
+    });
+    
+    console.log('Diagnosis initiation response:', response);
+    return response.data;
+  } catch (error) {
+    // End tracking with error
+    performanceTracker.endOperation(diagnosisId, 'error', {
+      errorMessage: error.message,
+      errorCode: error.response?.status
+    });
+    
+    console.error('Error initiating diagnosis:', error);
     throw error;
   }
 };
 
+// Function to send performance metrics to backend
+const sendPerformanceMetrics = async (metrics) => {
+  try {
+    // Send metrics in background, don't block main operation
+    apiService.post('/analytics/client-metrics', metrics).catch(err => {
+      console.warn('Failed to send performance metrics:', err);
+    });
+  } catch (error) {
+    console.warn('Error sending performance metrics:', error);
+  }
+};
+
+// Performance monitoring API endpoints
+export const getPerformanceAnalytics = async (params = {}) => {
+  try {
+    const response = await apiService.get('/analytics/performance', { params });
+    return response.data;
+  } catch (error) {
+    console.error('Error fetching performance analytics:', error);
+    throw error;
+  }
+};
+
+export const getRealtimePerformance = async () => {
+  try {
+    const response = await apiService.get('/analytics/performance/realtime');
+    return response.data;
+  } catch (error) {
+    console.error('Error fetching realtime performance:', error);
+    throw error;
+  }
+};
+
+// WebSocket performance monitoring
+export const subscribeToPerformanceUpdates = (callback) => {
+  socket.emit('subscribe_performance');
+  socket.on('performance_update', callback);
+  socket.on('slow_operation_alert', callback);
+  socket.on('performance_subscribed', () => {
+    console.log('Subscribed to performance updates');
+  });
+};
+
+export const unsubscribeFromPerformanceUpdates = () => {
+  socket.emit('unsubscribe_performance');
+  socket.off('performance_update');
+  socket.off('slow_operation_alert');
+};
+
+export const getPerformanceHistory = (hours = 24, endpoint = null) => {
+  socket.emit('get_performance_history', { hours, endpoint });
+};
+
+export const getEndpointPerformance = () => {
+  socket.emit('get_endpoint_performance');
+};
+
+// Set up performance monitoring listeners
+socket.on('performance_history', (data) => {
+  console.log('Performance history received:', data);
+});
+
+socket.on('endpoint_performance', (data) => {
+  console.log('Endpoint performance received:', data);
+});
+
+socket.on('performance_error', (error) => {
+  console.error('Performance monitoring error:', error);
+});
+
+// Export performance tracker for direct access
+export { performanceTracker };
 export const getVisitImageCount = async (visitId) => {
   try {
     const response = await apiService.get(`/visits/${visitId}/image-count`);
     return response.data.count;
   } catch (error) {
     console.error('Error fetching image count:', error);
-    throw error;
-  }
-};
-
-export const initiateDiagnosis = async (visitId) => {
-  console.log('Initiating diagnosis for visit:', visitId);
-  try {
-    const response = await apiService.post(`/visits/${visitId}/initiate-diagnosis`);
-    console.log('Diagnosis initiation response:', response);
-    return response.data;
-  } catch (error) {
-    console.error('Error initiating diagnosis:', error);
     throw error;
   }
 };
@@ -202,15 +461,7 @@ export const getPatient = async (patientId) => {
   }
 };
 
-// export const getDashboardStats = async () => {
-//   try {
-//     const response = await apiService.get('/dashboard/stats');
-//     return response.data;
-//   } catch (error) {
-//     console.error('Error fetching dashboard stats:', error);
-//     throw error;
-//   }
-// };
+
 export const getDashboardStats = async () => {
   try {
     const response = await apiService.get('/dashboard/stats');
@@ -243,6 +494,45 @@ export const getPatientInflux = async () => {
   }
 };
 
+export const get_images = async (image_id) => {
+  try {
+    const response = await apiService.get(`${image_id}/images`);
+    return response.data;
+  } catch (error) {
+    console.error('Error fetching visit images:', error);
+    throw error;
+  }
+};
+
+// Get an image with bounding boxes drawn around detections
+export const getImageWithDetections = (imageId) => {
+  // The URL returns the actual image file, not JSON
+  return `${API_URL}/images/${imageId}/with-detections`;
+};
+
+// Get detection summary for all images in a visit
+export const getVisitDetectionSummary = async (visitId) => {
+  try {
+    const response = await apiService.get(`/visits/${visitId}/detection-summary`);
+    return response.data;
+  } catch (error) {
+    console.error('Error fetching detection summary:', error);
+    throw error;
+  }
+};
+
+// Force refresh an image with detections (useful if the image analysis has been updated)
+export const refreshImageDetections = async (imageId) => {
+  try {
+    const response = await apiService.get(`/images/${imageId}/with-detections?force=true`, {
+      responseType: 'blob' // Important: get the image as binary data
+    });
+    return URL.createObjectURL(response.data);
+  } catch (error) {
+    console.error('Error refreshing image detections:', error);
+    throw error;
+  }
+};
 export const getDiagnosisResults = async (visitId) => {
   try {
     const response = await apiService.get(`/visits/${visitId}/diagnosis-results`);
@@ -401,7 +691,7 @@ export const submitDiagnosis = async (visitId, diagnosisData) => {
 export const downloadVisitReport = async (visitId) => {
   try {
     const response = await apiService.get(`/visits/${visitId}/download-report`, {
-      responseType: 'blob', // Important: This tells axios to treat the response as binary data
+      responseType: 'blob', 
     });
     return response.data;
   } catch (error) {
@@ -469,7 +759,7 @@ export const leaveRoom = (roomName) => {
 export const enableMFA = async () => {
   try {
     const token = localStorage.getItem('token');
-    console.log('Token before MFA request:', token);  // Add this for debugging
+    console.log('Token before MFA request:', token);  
     const response = await apiService.post('/enable-mfa');
     return response.data;
   } catch (error) {
@@ -499,30 +789,7 @@ export const disableMFA = async (password) => {
   }
 };
 
-// export const checkMFAStatus = async () => {
-//   try {
-//     const response = await apiService.get('/check-mfa-status');
-    
-//     // Log the response to ensure correct data
-//     console.log('MFA status response:', response.data);
-    
-//     return response.data;
-//   } catch (error) {
-//     if (error.response) {
-//       // Log the error response for easier debugging
-//       console.error('Error checking MFA status - Response:', error.response);
 
-//       // Handle specific errors like 404 or 500
-//       if (error.response.status === 404) {
-//         console.error('MFA status endpoint not found');
-//       }
-//     } else {
-//       console.error('Error checking MFA status:', error.message);
-//     }
-
-//     throw error;
-//   }
-// };
 export const checkMFAStatus = async () => {
   const token = localStorage.getItem('token');
   if (!token) {
@@ -624,6 +891,75 @@ export const getPerformanceMetrics = async () => {
     console.error('Error fetching performance metrics:', error);
     throw error;
   }
+};
+// Add these functions to your api.js file
+
+// Get diagnosis summary with validation data
+export const getDiagnosisSummary = async (visitId) => {
+  try {
+    const response = await apiService.get(`/visits/${visitId}/diagnosis-summary`);
+    console.log("API response for diagnosis summary:", response.data);
+    return response.data;
+  } catch (error) {
+    console.error("Error fetching diagnosis summary:", error);
+    throw error;
+  }
+};
+
+// Enhanced getDiagnosisResults with better error handling and logging
+export const getDiagnosisResultsEnhanced = async (visitId) => {
+  try {
+    const response = await apiService.get(`/visits/${visitId}/diagnosis-results`);
+    console.log("API response for diagnosis results:", response.data);
+    
+    // Log the structure to help debug
+    console.log("Response structure:", {
+      hasOverallDiagnosis: !!response.data.overall_diagnosis,
+      hasImageDiagnoses: !!response.data.image_diagnoses,
+      hasSummary: !!response.data.summary,
+      summaryKeys: response.data.summary ? Object.keys(response.data.summary) : [],
+      hasCountingValidation: !!response.data.summary?.counting_validation
+    });
+    
+    return response.data;
+  } catch (error) {
+    console.error("Error fetching diagnosis results:", error);
+    throw error;
+  }
+};
+
+// Test function to check what endpoints are available
+export const testDiagnosisEndpoints = async (visitId) => {
+  const results = {};
+  
+  // Test various endpoint variations
+  const endpoints = [
+    `/visits/${visitId}/diagnosis-results`,
+    `/visits/${visitId}/diagnosis-summary`, 
+    `/visits/${visitId}/diagnosis`,
+    `/visits/${visitId}/summary`,
+    `/visits/${visitId}`
+  ];
+  
+  for (const endpoint of endpoints) {
+    try {
+      const response = await apiService.get(endpoint);
+      results[endpoint] = {
+        success: true,
+        hasData: !!response.data,
+        hasCountingValidation: !!response.data.summary?.counting_validation || !!response.data.counting_validation,
+        structure: Object.keys(response.data || {})
+      };
+    } catch (error) {
+      results[endpoint] = {
+        success: false,
+        error: error.response?.status || error.message
+      };
+    }
+  }
+  
+  console.log("Endpoint test results:", results);
+  return results;
 };
 
 export default apiService;

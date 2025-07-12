@@ -19,7 +19,7 @@
     "class-variance-authority": "^0.7.0",
     "date-fns": "^4.1.0",
     "formik": "^2.4.6",
-    "framer-motion": "^11.5.4",
+    "framer-motion": "^11.18.2",
     "i18next": "^23.15.1",
     "leaflet": "^1.9.4",
     "lodash": "^4.17.21",
